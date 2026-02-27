@@ -1,0 +1,2 @@
+-- Seed opcional para desarrollo local.
+-- Añadir INSERTs de datos de prueba aquí.
