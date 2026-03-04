@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
+import { requireAuth } from './middleware/auth.js';
 import { adsRouter } from './routes/ads.js';
 import { PORT } from './config/env.js';
 const app = express();
@@ -9,7 +10,7 @@ app.use(express.json());
 app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
 });
-app.use('/api/ads', adsRouter);
+app.use('/api/ads', requireAuth, adsRouter);
 app.listen(Number(PORT), () => {
     console.log(`API listening on http://localhost:${PORT}`);
 });

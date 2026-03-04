@@ -10,7 +10,6 @@ import { ScoreCircle } from './ScoreCircle';
 interface ResultsTableProps {
   rows: AdRow[];
   onExportCsv?: () => void;
-  onEdit?: (row: AdRow) => void;
 }
 
 const FIXED_FILTERS = ['CON SDR', 'CTR ALTO'] as const;
@@ -23,7 +22,7 @@ function getAudienceFilters(rows: AdRow[]): string[] {
   return Array.from(set).sort();
 }
 
-export function ResultsTable({ rows, onExportCsv, onEdit }: ResultsTableProps) {
+export function ResultsTable({ rows, onExportCsv }: ResultsTableProps) {
   const audienceFilters = useMemo(() => getAudienceFilters(rows), [rows]);
   const filters = useMemo(
     () => (['ALL', ...audienceFilters, ...FIXED_FILTERS] as const),
@@ -94,7 +93,6 @@ export function ResultsTable({ rows, onExportCsv, onEdit }: ResultsTableProps) {
               <th className="px-4 py-3 font-medium">Tasa Calificado</th>
               <th className="px-4 py-3 font-medium">Costo/LC</th>
               <th className="px-4 py-3 font-medium">Puntaje</th>
-              <th className="px-4 py-3 font-medium">Acción</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
@@ -119,19 +117,6 @@ export function ResultsTable({ rows, onExportCsv, onEdit }: ResultsTableProps) {
                 <td className="px-4 py-3 tabular-nums text-gray-700">{formatMoney(row.costoLc)}</td>
                 <td className="px-4 py-3">
                   <ScoreCircle puntaje={row.puntaje ?? 0} />
-                </td>
-                <td className="px-4 py-3">
-                  {onEdit ? (
-                    <button
-                      type="button"
-                      onClick={() => onEdit(row)}
-                      className="text-sm font-medium text-gray-600 hover:text-gray-900 underline"
-                    >
-                      Editar
-                    </button>
-                  ) : (
-                    <span className="text-gray-400">—</span>
-                  )}
                 </td>
               </tr>
             ))}
