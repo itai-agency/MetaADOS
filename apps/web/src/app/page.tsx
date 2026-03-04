@@ -1,14 +1,34 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { TabNav, ClientSelector, AdManagerForm, SdrEntryView, ResultsTable } from '@/components/dashboard';
+import { TabNav } from '@/components/dashboard/TabNav';
+import { ClientSelector } from '@/components/dashboard/ClientSelector';
+import { SdrEntryView } from '@/components/dashboard/SdrEntryView';
+import { ResultsTable } from '@/components/dashboard/ResultsTable';
 import type { AdRow } from '@/lib/mock-ads';
-import { fetchAds, fetchAccounts, fetchManualAds } from '@/lib/api/ads';
-import type { AccountItem, ManualAdRow } from '@/lib/api/ads';
+import { fetchAds, fetchAccounts, fetchKommoLeads } from '@/lib/api/ads';
+import type { AccountItem, KommoLeadRow } from '@/lib/api/ads';
 import { useAuth } from '@/contexts/AuthContext';
 
-function exportCsv(rows: AdRow[]) {
+/** Primer día del mes actual en YYYY-MM-DD */
+function startOfCurrentMonth(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}-01`;
+}
+
+/** Fecha de hoy en YYYY-MM-DD */
+function todayString(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function exportCsvAds(rows: AdRow[]) {
   const headers = ['META ID', 'ANUNCIO', 'AUDIENCIA', 'CTR', 'CPM', 'LEADS', 'COSTO/LEAD', 'INVERSIÓN', 'CALIFICADO', 'TASA CALI.', 'COSTO/LC', 'PUNTAJE'];
   const csv = [
     headers.join(','),
@@ -38,36 +58,33 @@ function exportCsv(rows: AdRow[]) {
   URL.revokeObjectURL(url);
 }
 
-/** Meta es la única fuente de verdad: ad_id ↔ cliente. Filtra manual para mostrar solo entradas cuyo ad_id pertenece al cliente seleccionado. */
-function filterManualByMetaClient(adsFromMeta: AdRow[], manualRows: ManualAdRow[]): ManualAdRow[] {
-  const metaAdIds = new Set(adsFromMeta.map((a) => a.metaId));
-  return manualRows.filter((m) => metaAdIds.has(m.ad_id));
+function exportCsvSdr(rows: KommoLeadRow[]) {
+  const headers = ['Lead ID', 'Ad ID', 'Nombre lead', 'Estado actual', 'Último estado válido', 'Razón pérdida', 'Created at (UTC)'];
+  const csv = [
+    headers.join(','),
+    ...rows.map((r) =>
+      [
+        r.lead_id,
+        r.ad_id,
+        `"${(r.nombre_lead ?? '').replace(/"/g, '""')}"`,
+        `"${(r.estado_actual ?? '').replace(/"/g, '""')}"`,
+        `"${(r.ultimo_estado_valido ?? '').replace(/"/g, '""')}"`,
+        `"${(r.razon_perdida ?? '').replace(/"/g, '""')}"`,
+        r.created_at_utc ?? '',
+      ].join(',')
+    ),
+  ].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'kommo_leads_sdr.csv';
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
-function manualRowsToAdRows(rows: ManualAdRow[]): AdRow[] {
-  return rows.map((r) => {
-    const leads = r.total_leads ?? 0;
-    const calificados = r.qualified_leads ?? 0;
-    const tasaCali = leads > 0 ? Math.round((calificados / leads) * 100) : 0;
-    const costoLc = calificados > 0 ? Number((r.total_investment / calificados).toFixed(2)) : null;
-    const puntaje = tasaCali >= 100 ? 70 : tasaCali >= 60 ? 50 : 30;
-    return {
-      metaId: r.ad_id,
-      anuncio: r.ad_name,
-      audiencia: r.audience,
-      ctr: Number(r.ctr) ?? 0,
-      cpm: Number(r.cpm) ?? 0,
-      leads,
-      costoLead: Number(r.cost_per_lead) ?? 0,
-      inversion: Number(r.total_investment) ?? 0,
-      calificados,
-      tasaCali,
-      costoLc,
-      puntaje,
-      hasSdr: calificados > 0 || (r.sdr_notes != null && r.sdr_notes !== ''),
-    };
-  });
-}
+const defaultFechaInicio = startOfCurrentMonth();
+const defaultFechaFin = todayString();
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -75,12 +92,14 @@ export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<'gestor' | 'sdr'>('gestor');
   const [accounts, setAccounts] = useState<AccountItem[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>('');
+  const [fechaInicio, setFechaInicio] = useState(defaultFechaInicio);
+  const [fechaFin, setFechaFin] = useState(defaultFechaFin);
   const [ads, setAds] = useState<AdRow[]>([]);
-  const [manualAds, setManualAds] = useState<ManualAdRow[]>([]);
+  const [sdrRows, setSdrRows] = useState<KommoLeadRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingManual, setLoadingManual] = useState(false);
+  const [loadingSdr, setLoadingSdr] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [errorManual, setErrorManual] = useState<string | null>(null);
+  const [errorSdr, setErrorSdr] = useState<string | null>(null);
   const [errorAccounts, setErrorAccounts] = useState<string | null>(null);
 
   useEffect(() => {
@@ -108,32 +127,42 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     getAccessToken()
-      .then((token) => fetchAds({ accountId: selectedAccountId }, { accessToken: token ?? undefined }))
+      .then((token) =>
+        fetchAds(
+          { accountId: selectedAccountId, fechaInicio, fechaFin },
+          { accessToken: token ?? undefined }
+        )
+      )
       .then(setAds)
       .catch((err) => setError(err instanceof Error ? err.message : 'Error al cargar datos'))
       .finally(() => setLoading(false));
-  }, [selectedAccountId, getAccessToken]);
+  }, [selectedAccountId, fechaInicio, fechaFin, getAccessToken]);
 
   useEffect(() => {
     if (activeTab !== 'sdr') return;
-    setLoadingManual(true);
-    setErrorManual(null);
+    setLoadingSdr(true);
+    setErrorSdr(null);
     getAccessToken()
-      .then((token) => fetchManualAds({ accessToken: token ?? undefined }))
-      .then(setManualAds)
-      .catch((err) => setErrorManual(err instanceof Error ? err.message : 'Error al cargar datos manuales'))
-      .finally(() => setLoadingManual(false));
-  }, [activeTab, getAccessToken]);
+      .then((token) =>
+        fetchKommoLeads(
+          { fechaInicio, fechaFin },
+          { accessToken: token ?? undefined }
+        )
+      )
+      .then(setSdrRows)
+      .catch((err) => setErrorSdr(err instanceof Error ? err.message : 'Error al cargar datos SDR'))
+      .finally(() => setLoadingSdr(false));
+  }, [activeTab, fechaInicio, fechaFin, getAccessToken]);
 
-  const manualForClient = filterManualByMetaClient(ads, manualAds);
-  const handleExportCsvGestor = () => exportCsv(ads);
-  const handleExportCsvSdr = () => exportCsv(manualRowsToAdRows(manualForClient));
+  /** Meta es la fuente de verdad: solo mostrar en SDR los leads cuyo ad_id está en los ads del cliente seleccionado */
+  const metaAdIds = useMemo(() => new Set(ads.map((a) => a.metaId)), [ads]);
+  const sdrRowsForClient = useMemo(
+    () => sdrRows.filter((r) => metaAdIds.has(r.ad_id)),
+    [sdrRows, metaAdIds]
+  );
 
-  const handleManualUpdated = () => {
-    getAccessToken()
-      .then((token) => fetchManualAds({ accessToken: token ?? undefined }))
-      .then(setManualAds);
-  };
+  const handleExportCsvGestor = () => exportCsvAds(ads);
+  const handleExportCsvSdr = () => exportCsvSdr(sdrRowsForClient);
 
   const handleSignOut = async () => {
     await signOut();
@@ -175,11 +204,31 @@ export default function DashboardPage() {
           selectedAccountId={selectedAccountId}
           onSelect={setSelectedAccountId}
         />
+        <div className="flex flex-wrap items-center gap-4 mb-4">
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <span className="font-medium">Desde</span>
+            <input
+              type="date"
+              value={fechaInicio}
+              onChange={(e) => setFechaInicio(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-gray-900 focus:border-gray-900"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <span className="font-medium">Hasta</span>
+            <input
+              type="date"
+              value={fechaFin}
+              onChange={(e) => setFechaFin(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-gray-900 focus:border-gray-900"
+            />
+          </label>
+        </div>
         <TabNav
           active={activeTab}
           onSelect={setActiveTab}
           gestorCount={ads.length}
-          sdrCount={manualForClient.length}
+          sdrCount={sdrRowsForClient.length}
         />
 
         {activeTab === 'gestor' && (
@@ -195,43 +244,28 @@ export default function DashboardPage() {
               </div>
             )}
             {!loading && (
-              <>
-                <AdManagerForm getAccessToken={getAccessToken} />
-                <ResultsTable rows={ads} onExportCsv={handleExportCsvGestor} />
-              </>
+              <ResultsTable rows={ads} onExportCsv={handleExportCsvGestor} />
             )}
           </>
         )}
 
         {activeTab === 'sdr' && (
           <>
-            {loading && (
+            {loadingSdr && (
               <div className="flex items-center justify-center py-12 text-gray-500">
-                Cargando anuncios del cliente…
+                Cargando datos SDR…
               </div>
             )}
-            {error && (
+            {errorSdr && (
               <div className="mb-4 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
-                {error}
+                {errorSdr}
               </div>
             )}
-            {!loading && (
-              <>
-                {loadingManual && (
-                  <div className="text-sm text-gray-500 mb-2">Cargando datos SDR…</div>
-                )}
-                {errorManual && (
-                  <div className="mb-2 rounded-lg bg-amber-50 border border-amber-200 px-4 py-2 text-sm text-amber-800">
-                    {errorManual}
-                  </div>
-                )}
-                <SdrEntryView
-                  manualRows={manualForClient}
-                  onExportCsv={handleExportCsvSdr}
-                  onManualUpdated={handleManualUpdated}
-                  getAccessToken={getAccessToken}
-                />
-              </>
+            {!loadingSdr && (
+              <SdrEntryView
+                rows={sdrRowsForClient}
+                onExportCsv={handleExportCsvSdr}
+              />
             )}
           </>
         )}

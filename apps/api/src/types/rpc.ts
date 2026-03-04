@@ -35,3 +35,14 @@ export interface AdRowResponse {
   puntaje: number;
   hasSdr: boolean;
 }
+
+/** Fila devuelta por kommo_leads_ados (RPC base SDR/Leads) */
+export interface KommoLeadsAdosRow {
+  lead_id: number;
+  ad_id: string;
+  nombre_lead: string;
+  estado_actual: string;
+  ultimo_estado_valido: string;
+  razon_perdida: string;
+  created_at_utc: string;
+}
